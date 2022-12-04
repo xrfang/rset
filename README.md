@@ -1,2 +1,3 @@
-# set
-Set of uint32 with optional ranking
+# rset
+
+Set of uint32 with optional ranking.

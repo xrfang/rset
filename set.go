@@ -80,18 +80,32 @@ TODO:
 - Set的testcase
 - Export（思考是否需要）
 */
-func (s *Set) Range(ranked bool, offset int, ids []byte) {
+func (s *Set) Range(ranked bool, offset int, ids []uint32) int {
 	s.Lock()
 	defer s.Unlock()
+	if len(ids) == 0 {
+		return 0
+	}
 	if ranked {
+		size := len(s.lst.data)
+		if offset >= size {
+			return 0
+		}
 		if !s.lst.rank {
 			s.lst.sortByScore()
 		}
-		cnt := len(ids)
-		if rest := len(s.lst.data) - offset; cnt > rest {
-			cnt = rest
+		n := 0
+		for i := offset; i < size; i++ {
+			x := i - offset
+			if x >= len(ids) {
+				break
+			}
+			ids[x] = s.lst.data[i].ID
+			n++
 		}
+		return n
 	}
+	//TODO: get slice from rbm...
 }
 
 func (s *Set) Count() uint64 {

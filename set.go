@@ -3,6 +3,7 @@ package rset
 import (
 	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"io"
 	"sync"
 
@@ -64,7 +65,16 @@ func (s *Set) Has(x uint32) bool {
 }
 
 func (s *Set) Load(r io.Reader) error {
-	tr := tar.NewReader(r)
+	s.Lock()
+	defer s.Unlock()
+	s.rbm.Clear()
+	s.lst.clear()
+	zr, err := gzip.NewReader(r)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+	tr := tar.NewReader(zr)
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -88,7 +98,16 @@ func (s *Set) Load(r io.Reader) error {
 }
 
 func (s *Set) Save(w io.Writer) (err error) {
-	tw := tar.NewWriter(w)
+	s.Lock()
+	defer s.Unlock()
+	zw, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
+	defer func() {
+		ce := zw.Close()
+		if err == nil {
+			err = ce
+		}
+	}()
+	tw := tar.NewWriter(zw)
 	defer func() {
 		ce := tw.Close()
 		if err == nil {
@@ -107,7 +126,6 @@ func (s *Set) Save(w io.Writer) (err error) {
 		_, err := io.Copy(tw, bs)
 		return err
 	}
-
 	var bs bytes.Buffer
 	if _, err = s.rbm.WriteTo(&bs); err != nil {
 		return
@@ -115,11 +133,14 @@ func (s *Set) Save(w io.Writer) (err error) {
 	if err = save("rbm", &bs); err != nil {
 		return
 	}
-	bs.Reset()
-	if err = s.lst.save(&bs); err != nil {
-		return
+	if len(s.lst.data) > 0 {
+		bs.Reset()
+		if err = s.lst.save(&bs); err != nil {
+			return
+		}
+		return save("lst", &bs)
 	}
-	return save("lst", &bs)
+	return nil
 }
 
 func (s *Set) Iterate(ranked bool, f Iterator) {

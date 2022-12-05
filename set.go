@@ -1,6 +1,9 @@
 package rset
 
 import (
+	"archive/tar"
+	"bytes"
+	"io"
 	"sync"
 
 	"github.com/RoaringBitmap/roaring"
@@ -56,6 +59,69 @@ func (s *Set) Clone() *Set {
 	return &ns
 }
 
+func (s *Set) Has(x uint32) bool {
+	return s.rbm.Contains(x)
+}
+
+func (s *Set) Load(r io.Reader) error {
+	tr := tar.NewReader(r)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break // End of archive
+		}
+		if err != nil {
+			return err
+		}
+		switch hdr.Name {
+		case "rbm":
+			if _, err = s.rbm.ReadFrom(tr); err != nil {
+				return err
+			}
+		case "lst":
+			if err = s.lst.load(tr); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Set) Save(w io.Writer) (err error) {
+	tw := tar.NewWriter(w)
+	defer func() {
+		ce := tw.Close()
+		if err == nil {
+			err = ce
+		}
+	}()
+	save := func(fn string, bs *bytes.Buffer) error {
+		hdr := &tar.Header{
+			Name: fn,
+			Mode: 0644,
+			Size: int64(bs.Len()),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		_, err := io.Copy(tw, bs)
+		return err
+	}
+
+	var bs bytes.Buffer
+	if _, err = s.rbm.WriteTo(&bs); err != nil {
+		return
+	}
+	if err = save("rbm", &bs); err != nil {
+		return
+	}
+	bs.Reset()
+	if err = s.lst.save(&bs); err != nil {
+		return
+	}
+	return save("lst", &bs)
+}
+
 func (s *Set) Iterate(ranked bool, f Iterator) {
 	s.Lock()
 	defer s.Unlock()
@@ -73,39 +139,40 @@ func (s *Set) Iterate(ranked bool, f Iterator) {
 	}
 }
 
-/*
-TODO:
-- 完成Range
-- Set的load/save
-- Set的testcase
-- Export（思考是否需要）
-*/
-func (s *Set) Range(ranked bool, offset int, ids []uint32) int {
-	s.Lock()
-	defer s.Unlock()
+func (s *Set) Rank(offset int, ids []uint32) int {
 	if len(ids) == 0 {
 		return 0
 	}
-	if ranked {
-		size := len(s.lst.data)
-		if offset >= size {
-			return 0
-		}
-		if !s.lst.rank {
-			s.lst.sortByScore()
-		}
-		n := 0
-		for i := offset; i < size; i++ {
-			x := i - offset
-			if x >= len(ids) {
-				break
-			}
-			ids[x] = s.lst.data[i].ID
-			n++
-		}
-		return n
+	size := len(s.lst.data)
+	if offset >= size {
+		return 0
 	}
-	//TODO: get slice from rbm...
+	if s.lst.rank {
+		s.RLock()
+		defer s.RUnlock()
+	} else {
+		s.Lock()
+		defer s.Unlock()
+		s.lst.sortByScore()
+	}
+	n := 0
+	for i := offset; i < size; i++ {
+		x := i - offset
+		if x >= len(ids) {
+			break
+		}
+		ids[x] = s.lst.data[i].ID
+		n++
+	}
+	return n
+}
+
+func (s *Set) Range(last uint32, ids []uint32) int {
+	s.RLock()
+	m := s.rbm.Clone()
+	s.RUnlock()
+	m.RemoveRange(0, uint64(last)+1)
+	return m.ManyIterator().NextMany(ids)
 }
 
 func (s *Set) Count() uint64 {
